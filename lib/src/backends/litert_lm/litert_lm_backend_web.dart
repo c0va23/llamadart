@@ -100,6 +100,16 @@ class LiteRtLmBackend
   }
 
   @override
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) {
+    throw UnsupportedError(
+      'This backend cannot load a multimodal projector from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoad(String path, ModelParams params) {
     return modelLoadFromUrl(path, params);
   }

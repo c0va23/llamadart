@@ -7255,6 +7255,19 @@ external ffi.Pointer<mtmd_context> mtmd_init_from_file(
   mtmd_context_params ctx_params,
 );
 
+@ffi.Native<
+  ffi.Pointer<mtmd_context> Function(
+    ffi.Pointer<FILE>,
+    ffi.Pointer<llama_model>,
+    mtmd_context_params,
+  )
+>()
+external ffi.Pointer<mtmd_context> mtmd_init_from_file_ptr(
+  ffi.Pointer<FILE> file,
+  ffi.Pointer<llama_model> text_model,
+  mtmd_context_params ctx_params,
+);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<mtmd_context>)>()
 external void mtmd_free(ffi.Pointer<mtmd_context> ctx);
 

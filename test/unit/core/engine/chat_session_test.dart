@@ -118,6 +118,15 @@ class MockLlamaBackend implements LlamaBackend, BackendAvailability {
     String mmProjPath,
   ) async => null;
   @override
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) {
+    throw UnsupportedError(
+      'This backend cannot load a multimodal projector from a file descriptor.',
+    );
+  }
+  @override
   Future<void> multimodalContextFree(int mmContextHandle) async {}
   @override
   Future<bool> supportsVision(int mmContextHandle) async => false;

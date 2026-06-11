@@ -561,6 +561,26 @@ class NativeLlamaBackend
   }
 
   @override
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) async {
+    final rp = ReceivePort();
+    _sendPort!.send(
+      MultimodalContextCreateFromFdRequest(
+        modelHandle,
+        fileDescriptor,
+        rp.sendPort,
+      ),
+    );
+    final res = await rp.first;
+    rp.close();
+    if (res is HandleResponse) return res.handle;
+    if (res is ErrorResponse) throw Exception(res.message);
+    return null;
+  }
+
+  @override
   Future<void> multimodalContextFree(int mmContextHandle) async {
     final rp = ReceivePort();
     _sendPort!.send(MultimodalContextFreeRequest(mmContextHandle, rp.sendPort));

@@ -280,6 +280,23 @@ class MultimodalContextCreateRequest extends WorkerRequest {
   );
 }
 
+/// Request to create a multimodal context from an already-open file
+/// descriptor (Android scoped storage).
+class MultimodalContextCreateFromFdRequest extends WorkerRequest {
+  /// The handle of the text model.
+  final int modelHandle;
+
+  /// A readable file descriptor for the multimodal projector (mmproj).
+  final int fileDescriptor;
+
+  /// Creates a new [MultimodalContextCreateFromFdRequest].
+  MultimodalContextCreateFromFdRequest(
+    this.modelHandle,
+    this.fileDescriptor,
+    super.sendPort,
+  );
+}
+
 /// Request to free a multimodal context.
 class MultimodalContextFreeRequest extends WorkerRequest {
   /// The handle of the multimodal context.

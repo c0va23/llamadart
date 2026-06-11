@@ -109,6 +109,19 @@ abstract class LlamaBackend {
   /// Loads a multimodal projector for vision/audio support.
   Future<int?> multimodalContextCreate(int modelHandle, String mmProjPath);
 
+  /// Loads a multimodal projector from an already-open, readable
+  /// [fileDescriptor] (Android scoped storage, where the mmproj GGUF can't be
+  /// opened by path). Only the native llama.cpp backend supports this; every
+  /// other backend throws [UnsupportedError].
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) {
+    throw UnsupportedError(
+      'This backend cannot load a multimodal projector from a file descriptor.',
+    );
+  }
+
   /// Frees the multimodal context.
   Future<void> multimodalContextFree(int mmContextHandle);
 
