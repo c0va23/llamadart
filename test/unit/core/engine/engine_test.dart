@@ -211,6 +211,31 @@ class MockLlamaBackend
   }
 }
 
+class FdLoadingMockBackend extends MockLlamaBackend
+    implements BackendFdModelLoading {
+  FdLoadingMockBackend({
+    this.failModelLoadFromFd = false,
+    super.failContextCreate,
+  });
+
+  final bool failModelLoadFromFd;
+  int modelLoadFromFdCalls = 0;
+  int? lastFileDescriptor;
+  ModelParams? lastFdModelParams;
+
+  @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) async {
+    modelLoadFromFdCalls += 1;
+    lastFileDescriptor = fileDescriptor;
+    lastFdModelParams = params;
+    if (failModelLoadFromFd) {
+      throw Exception('fd model load failed');
+    }
+    _isReady = true;
+    return 1;
+  }
+}
+
 class UnsupportedTokenizationBackend extends MockLlamaBackend {
   @override
   Future<List<int>> tokenize(
@@ -457,6 +482,64 @@ void main() {
         expect(failingEngine.isReady, isFalse);
         expect(failingEngine.modelHandle, isNull);
         expect(failingEngine.contextHandle, isNull);
+      },
+    );
+
+    test('loadModelFromFd loads through the fd-loading capability', () async {
+      final fdBackend = FdLoadingMockBackend();
+      final fdEngine = LlamaEngine(fdBackend);
+      const params = ModelParams(contextSize: 1234);
+
+      await fdEngine.loadModelFromFd(42, modelParams: params);
+
+      expect(fdEngine.isReady, isTrue);
+      expect(fdBackend.modelLoadFromFdCalls, 1);
+      expect(fdBackend.lastFileDescriptor, 42);
+      expect(fdBackend.lastFdModelParams, same(params));
+      expect(fdBackend.modelLoadCalls, 0);
+    });
+
+    test('loadModelFromFd throws LlamaUnsupportedException when the backend '
+        'lacks the capability', () async {
+      await expectLater(
+        () => engine.loadModelFromFd(42),
+        throwsA(isA<LlamaUnsupportedException>()),
+      );
+
+      expect(backend.modelLoadCalls, 0);
+      expect(engine.isReady, isFalse);
+    });
+
+    test('loadModelFromFd wraps backend failures', () async {
+      final fdBackend = FdLoadingMockBackend(failModelLoadFromFd: true);
+      final fdEngine = LlamaEngine(fdBackend);
+
+      await expectLater(
+        () => fdEngine.loadModelFromFd(42),
+        throwsA(isA<LlamaModelException>()),
+      );
+
+      expect(fdEngine.isReady, isFalse);
+      expect(fdEngine.modelHandle, isNull);
+      expect(fdBackend.modelFreeCalls, 0);
+    });
+
+    test(
+      'loadModelFromFd cleans up partial state when context creation fails',
+      () async {
+        final fdBackend = FdLoadingMockBackend(failContextCreate: true);
+        final fdEngine = LlamaEngine(fdBackend);
+
+        await expectLater(
+          () => fdEngine.loadModelFromFd(42),
+          throwsA(isA<LlamaModelException>()),
+        );
+
+        expect(fdBackend.modelFreeCalls, 1);
+        expect(fdBackend.contextFreeCalls, 0);
+        expect(fdEngine.isReady, isFalse);
+        expect(fdEngine.modelHandle, isNull);
+        expect(fdEngine.contextHandle, isNull);
       },
     );
 

@@ -183,6 +183,58 @@ class LlamaEngine {
     }
   }
 
+  /// Loads a model from an already-open, readable [fileDescriptor].
+  ///
+  /// Exists for Android scoped storage: the GGUF lives in shared storage that
+  /// can't be opened by path, so the caller hands over a read fd obtained
+  /// through the Storage Access Framework. The backend mmaps the fd directly, so
+  /// the model is demand-paged exactly as for [loadModel]. The caller retains
+  /// ownership of [fileDescriptor] and may close it once this future completes.
+  ///
+  /// Only backends that implement [BackendFdModelLoading] support this — the
+  /// native llama.cpp backend; others cause a [LlamaUnsupportedException].
+  Future<void> loadModelFromFd(
+    int fileDescriptor, {
+    ModelParams modelParams = const ModelParams(),
+  }) async {
+    LlamaLogger.instance.info('Loading model from fd: $fileDescriptor');
+
+    final fdBackend = backend;
+    if (fdBackend is! BackendFdModelLoading) {
+      throw LlamaUnsupportedException(
+        'Loading a model from a file descriptor is not supported by the '
+        'active backend.',
+      );
+    }
+
+    try {
+      await backend.setLogLevel(_nativeLogLevel);
+      _ensureNotReady();
+      _modelPath = null;
+      _cachedModelMetadata = null;
+      _modelHandle = await (fdBackend as BackendFdModelLoading).modelLoadFromFd(
+        fileDescriptor,
+        modelParams,
+      );
+      _contextHandle = await backend.contextCreate(_modelHandle!, modelParams);
+      _isReady = true;
+      LlamaLogger.instance.info(
+        'Model loaded successfully from fd: $fileDescriptor',
+      );
+    } catch (error, stackTrace) {
+      await _cleanupFailedLoadState();
+      LlamaLogger.instance.error(
+        'Failed to load model from fd: $fileDescriptor',
+        error,
+        stackTrace,
+      );
+      throw LlamaModelException(
+        'Failed to load model from fd: $fileDescriptor',
+        error,
+      );
+    }
+  }
+
   /// Loads a model from a structured [source].
   ///
   /// Local path sources are dispatched through [loadModel]. Remote URL targets

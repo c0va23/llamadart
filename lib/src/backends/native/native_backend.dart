@@ -20,6 +20,7 @@ class NativeAutoBackend
     implements
         LlamaBackend,
         BackendAvailability,
+        BackendFdModelLoading,
         BackendRuntimeDiagnostics,
         BackendPerformanceDiagnostics,
         BackendEmbeddings,
@@ -78,6 +79,23 @@ class NativeAutoBackend
   Future<int> modelLoad(String path, ModelParams params) async {
     final delegate = await _delegateForPath(path);
     return delegate.modelLoad(path, params);
+  }
+
+  @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) async {
+    // An fd carries no path to sniff, but fd loading is a llama.cpp/GGUF-only
+    // capability (Android scoped storage), so force that delegate.
+    final delegate = await _delegateForKind(_NativeBackendKind.llamaCpp);
+    if (delegate is BackendFdModelLoading) {
+      return (delegate as BackendFdModelLoading).modelLoadFromFd(
+        fileDescriptor,
+        params,
+      );
+    }
+    throw UnsupportedError(
+      'The selected native backend does not support loading a model from a '
+      'file descriptor.',
+    );
   }
 
   @override

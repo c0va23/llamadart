@@ -1,5 +1,11 @@
 ## Unreleased
 
+* Added `LlamaEngine.loadModelFromFd` and the `BackendFdModelLoading` backend
+  capability so apps can load a GGUF model from an already-open readable file
+  descriptor. This targets Android scoped storage, where a Storage Access
+  Framework selection exposes only an fd and the file path is hidden from
+  `dart:io`; only the native llama.cpp backend implements the capability, and
+  other backends fail with `LlamaUnsupportedException`.
 * Fixed docs references that still pointed at
   `llamadart_litert_lm_flutter` `0.0.1` and
   the pre-`native.1` LiteRT-LM release after the 0.8.0 native pin sync moved

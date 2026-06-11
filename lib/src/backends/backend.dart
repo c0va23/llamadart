@@ -129,6 +129,20 @@ abstract class BackendAvailability {
   Future<String> getAvailableBackends();
 }
 
+/// Optional backend capability for loading models from an already-open,
+/// readable file descriptor instead of a filesystem path.
+///
+/// Exists for Android scoped storage, where the model lives in shared storage
+/// that can't be opened by path; the caller supplies a read fd obtained
+/// through the Storage Access Framework. Only the native llama.cpp backend
+/// implements this.
+abstract class BackendFdModelLoading {
+  /// Initializes the model from an already-open, readable [fileDescriptor].
+  ///
+  /// The caller retains ownership of [fileDescriptor].
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params);
+}
+
 /// Optional backend capability for reporting grammar-constrained decoding.
 ///
 /// Backends that do not support llama.cpp-style GBNF grammar constraints can
