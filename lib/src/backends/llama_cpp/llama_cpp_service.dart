@@ -1442,6 +1442,33 @@ class LlamaCppService {
   int loadModel(String modelPath, ModelParams modelParams) {
     final modelFileSize = _validateGgufModelFile(modelPath, 'Model');
 
+    return _loadModelWithParams(
+      modelParams,
+      sourcePath: modelPath,
+      sourceDescription: "size=$modelFileSize bytes",
+      invokeNativeLoad: (mparams) {
+        final modelPathPtr = modelPath.toNativeUtf8();
+        try {
+          return llama_model_load_from_file(modelPathPtr.cast(), mparams);
+        } finally {
+          malloc.free(modelPathPtr);
+        }
+      },
+    );
+  }
+
+  /// Shared body of [loadModel] and future non-path model sources: builds the
+  /// model params, runs [invokeNativeLoad] to produce the native model pointer,
+  /// then records the handle and backend bookkeeping. [sourcePath] is null when
+  /// the model has no filesystem path; [sourceDescription] only appears in the
+  /// failure diagnostics.
+  int _loadModelWithParams(
+    ModelParams modelParams, {
+    required String? sourcePath,
+    required String sourceDescription,
+    required Pointer<llama_model> Function(llama_model_params mparams)
+    invokeNativeLoad,
+  }) {
     _applyConfiguredLogLevel();
     final effectiveBackend = resolvePreferredBackendForLoad(
       modelParams,
@@ -1450,7 +1477,6 @@ class LlamaCppService {
 
     _prepareBackendsForModelLoad(effectiveBackend);
 
-    final modelPathPtr = modelPath.toNativeUtf8();
     final mparams = llama_model_default_params();
     var preferredDevices = _createPreferredDeviceList(effectiveBackend);
     var gpuLayers = resolveGpuLayersForLoad(
@@ -1474,7 +1500,7 @@ class LlamaCppService {
     final mtmdUseGpu = resolveMtmdUseGpuForLoad(
       modelParams,
       gpuLayers,
-      modelPath: modelPath,
+      modelPath: sourcePath,
       isAndroid: Platform.isAndroid,
     );
 
@@ -1488,9 +1514,8 @@ class LlamaCppService {
 
     Pointer<llama_model> modelPtr = nullptr;
     try {
-      modelPtr = llama_model_load_from_file(modelPathPtr.cast(), mparams);
+      modelPtr = invokeNativeLoad(mparams);
     } finally {
-      malloc.free(modelPathPtr);
       if (preferredDevices != null) {
         malloc.free(preferredDevices);
       }
@@ -1499,13 +1524,13 @@ class LlamaCppService {
     if (modelPtr == nullptr) {
       final diagnostics = _backendDiagnostics();
       throw Exception(
-        "Failed to load model (size=$modelFileSize bytes, "
+        "Failed to load model ($sourceDescription, "
         "diagnostics=$diagnostics)",
       );
     }
 
     final handle = _getHandle();
-    _models[handle] = _LlamaModelWrapper(modelPtr, sourcePath: modelPath);
+    _models[handle] = _LlamaModelWrapper(modelPtr, sourcePath: sourcePath);
     _loraAdapters[handle] = {};
     _modelToMtmdUseGpu[handle] = mtmdUseGpu;
     final resolvedBackend = _resolveBackendNameForLoad(

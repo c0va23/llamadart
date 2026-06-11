@@ -438,8 +438,10 @@ class NativeAutoBackend
     );
   }
 
-  Future<LlamaBackend> _delegateForPath(String path) async {
-    final kind = _kindForPath(path);
+  Future<LlamaBackend> _delegateForPath(String path) =>
+      _delegateForKind(_kindForPath(path));
+
+  Future<LlamaBackend> _delegateForKind(_NativeBackendKind kind) async {
     if (_delegate != null && _delegateKind == kind) {
       return _delegate!;
     }
