@@ -53,6 +53,13 @@ class MockLlamaBackend
   }
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoadFromUrl(
     String url,
     ModelParams params, {

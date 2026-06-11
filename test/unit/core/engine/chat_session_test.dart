@@ -21,6 +21,13 @@ class MockLlamaBackend implements LlamaBackend, BackendAvailability {
   Future<int> modelLoad(String path, ModelParams params) async => 1;
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoadFromUrl(
     String url,
     ModelParams params, {

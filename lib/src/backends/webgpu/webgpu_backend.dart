@@ -882,6 +882,13 @@ class WebGpuLlamaBackend
   }
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoad(String path, ModelParams params) {
     return modelLoadFromUrl(path, params);
   }

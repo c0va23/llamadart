@@ -20,6 +20,18 @@ abstract class LlamaBackend {
   /// Initializes the model from a local file [path].
   Future<int> modelLoad(String path, ModelParams params);
 
+  /// Initializes the model from an already-open, readable [fileDescriptor].
+  ///
+  /// Exists for Android scoped storage, where the model lives in shared storage
+  /// that can't be opened by path; the caller supplies a read fd from the
+  /// Storage Access Framework. Only the native llama.cpp backend supports this;
+  /// every other backend throws [UnsupportedError].
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
   /// Initializes the model from a remote [url].
   Future<int> modelLoadFromUrl(
     String url,

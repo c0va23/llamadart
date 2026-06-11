@@ -70,6 +70,13 @@ class LiteRtLmBackend
   bool get supportsNativeChatGeneration => true;
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoad(String path, ModelParams params) async {
     await _cancelActiveGeneration();
     final response = await _sendRequest(

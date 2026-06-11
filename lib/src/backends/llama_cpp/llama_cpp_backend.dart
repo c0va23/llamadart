@@ -112,6 +112,18 @@ class NativeLlamaBackend
   }
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) async {
+    await _ensureIsolate();
+    final rp = ReceivePort();
+    _sendPort!.send(ModelLoadFromFdRequest(fileDescriptor, params, rp.sendPort));
+    final res = await rp.first;
+    rp.close();
+    if (res is HandleResponse) return res.handle;
+    if (res is ErrorResponse) throw Exception(res.message);
+    throw Exception("Unknown response during model load");
+  }
+
+  @override
   Future<int> modelLoadFromUrl(
     String url,
     ModelParams params, {

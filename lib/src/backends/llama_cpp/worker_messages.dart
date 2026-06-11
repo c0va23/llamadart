@@ -25,6 +25,27 @@ class ModelLoadRequest extends WorkerRequest {
   ModelLoadRequest(this.modelPath, this.modelParams, super.sendPort);
 }
 
+/// Request to load a model from an already-open file descriptor.
+///
+/// Used on Android, where the GGUF lives in shared storage that `dart:io`
+/// cannot open by path; the caller passes a read fd obtained through the
+/// Storage Access Framework. The fd is process-global, so it stays valid when
+/// this message crosses into the worker isolate.
+class ModelLoadFromFdRequest extends WorkerRequest {
+  /// An open, readable file descriptor for the model file.
+  final int fileDescriptor;
+
+  /// Parameters for loading the model.
+  final ModelParams modelParams;
+
+  /// Creates a new [ModelLoadFromFdRequest].
+  ModelLoadFromFdRequest(
+    this.fileDescriptor,
+    this.modelParams,
+    super.sendPort,
+  );
+}
+
 /// Request to free a model.
 class ModelFreeRequest extends WorkerRequest {
   /// The handle of the model to free.

@@ -81,6 +81,14 @@ class NativeAutoBackend
   }
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) async {
+    // An fd carries no path to sniff, but fd loading is a llama.cpp/GGUF-only
+    // capability (Android scoped storage), so force that delegate.
+    final delegate = await _delegateForKind(_NativeBackendKind.llamaCpp);
+    return delegate.modelLoadFromFd(fileDescriptor, params);
+  }
+
+  @override
   Future<int> modelLoadFromUrl(
     String url,
     ModelParams params, {

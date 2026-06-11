@@ -65,6 +65,13 @@ class WebAutoBackend
   }
 
   @override
+  Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) {
+    throw UnsupportedError(
+      'This backend cannot load a model from a file descriptor.',
+    );
+  }
+
+  @override
   Future<int> modelLoad(String path, ModelParams params) async {
     final delegate = await _delegateForSource(path);
     return delegate.modelLoad(path, params);

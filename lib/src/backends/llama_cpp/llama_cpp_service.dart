@@ -18,6 +18,25 @@ import 'bindings.dart';
 
 const _llamadartWrapperAssetId = 'package:llamadart/llamadart_wrapper';
 
+// libc entry points used only by [LlamaCppService.loadModelFromFd] to wrap an
+// already-open file descriptor in a `FILE*`. Resolved lazily from the process
+// (libc is always loaded on Android/desktop), so platforms that never load from
+// an fd — and web, where `DynamicLibrary.process()` is unavailable — never touch
+// them.
+final DynamicLibrary _processLibrary = DynamicLibrary.process();
+final int Function(int duplicatedFd) _libcDup = _processLibrary
+    .lookupFunction<Int32 Function(Int32), int Function(int)>('dup');
+final int Function(int fileDescriptor) _libcClose = _processLibrary
+    .lookupFunction<Int32 Function(Int32), int Function(int)>('close');
+final Pointer<FILE> Function(int fileDescriptor, Pointer<Char> mode)
+_libcFdopen = _processLibrary.lookupFunction<
+    Pointer<FILE> Function(Int32, Pointer<Char>),
+    Pointer<FILE> Function(int, Pointer<Char>)>('fdopen');
+final int Function(Pointer<FILE> filePtr) _libcFclose = _processLibrary
+    .lookupFunction<Int32 Function(Pointer<FILE>), int Function(Pointer<FILE>)>(
+      'fclose',
+    );
+
 typedef _GgmlBackendLoadNative = ggml_backend_reg_t Function(Pointer<Char>);
 typedef _GgmlBackendLoadDart = ggml_backend_reg_t Function(Pointer<Char>);
 typedef _GgmlBackendInitNative = ggml_backend_reg_t Function();
@@ -1457,11 +1476,47 @@ class LlamaCppService {
     );
   }
 
-  /// Shared body of [loadModel] and future non-path model sources: builds the
-  /// model params, runs [invokeNativeLoad] to produce the native model pointer,
-  /// then records the handle and backend bookkeeping. [sourcePath] is null when
-  /// the model has no filesystem path; [sourceDescription] only appears in the
-  /// failure diagnostics.
+  /// Loads a model from an already-open, readable file descriptor.
+  ///
+  /// This exists for Android scoped storage: the GGUF lives in shared storage
+  /// where `dart:io` cannot open it by path, but the caller can hand us a read
+  /// fd obtained through the Storage Access Framework. We [dup] it (so our own
+  /// `fclose` never disturbs the caller's fd), wrap it in a `FILE*`, and pass it
+  /// to `llama_model_load_from_file_ptr`, which mmaps the fd directly — the
+  /// mapping outlives the close, so the model is demand-paged exactly as for the
+  /// path-based load. The caller retains ownership of [fileDescriptor].
+  int loadModelFromFd(int fileDescriptor, ModelParams modelParams) {
+    return _loadModelWithParams(
+      modelParams,
+      sourcePath: null,
+      sourceDescription: "fd=$fileDescriptor",
+      invokeNativeLoad: (mparams) {
+        final duppedFd = _libcDup(fileDescriptor);
+        if (duppedFd < 0) {
+          throw Exception("dup(fd=$fileDescriptor) failed");
+        }
+        final modePtr = "rb".toNativeUtf8();
+        final filePtr = _libcFdopen(duppedFd, modePtr.cast());
+        malloc.free(modePtr);
+        if (filePtr == nullptr) {
+          _libcClose(duppedFd);
+          throw Exception("fdopen(fd=$fileDescriptor) failed");
+        }
+        try {
+          return llama_model_load_from_file_ptr(filePtr, mparams);
+        } finally {
+          // Closes duppedFd; with mmap the mapping stays valid afterwards.
+          _libcFclose(filePtr);
+        }
+      },
+    );
+  }
+
+  /// Shared body of [loadModel] and [loadModelFromFd]: builds the model params,
+  /// runs [invokeNativeLoad] to produce the native model pointer, then records
+  /// the handle and backend bookkeeping. [sourcePath] is null when the model was
+  /// loaded from a bare fd (Android scoped storage); [sourceDescription] only
+  /// appears in the failure diagnostics.
   int _loadModelWithParams(
     ModelParams modelParams, {
     required String? sourcePath,

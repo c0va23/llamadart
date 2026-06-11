@@ -67,6 +67,13 @@ void llamaWorkerEntry(SendPort initialSendPort) {
             );
             message.sendPort.send(HandleResponse(handle));
 
+          case ModelLoadFromFdRequest():
+            final handle = service.loadModelFromFd(
+              message.fileDescriptor,
+              message.modelParams,
+            );
+            message.sendPort.send(HandleResponse(handle));
+
           case LogLevelRequest():
             service.setLogLevel(message.logLevel);
             message.sendPort.send(DoneResponse());
