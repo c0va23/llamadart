@@ -390,6 +390,54 @@ class LlamaEngine {
     }
   }
 
+  /// Loads a multimodal projector from an already-open, readable
+  /// [fileDescriptor] — the Android-scoped-storage counterpart of
+  /// [loadMultimodalProjector].
+  ///
+  /// The mmproj GGUF lives in shared storage that can't be opened by path, so
+  /// the caller hands over a read fd from the Storage Access Framework. The
+  /// caller retains ownership of [fileDescriptor] and may close it once this
+  /// future completes. Only backends that implement [BackendFdModelLoading]
+  /// support this — the native llama.cpp backend; others cause a
+  /// [LlamaUnsupportedException].
+  Future<void> loadMultimodalProjectorFromFd(int fileDescriptor) {
+    return _withMmLifecycle(
+      () => _loadMultimodalProjectorFromFdLocked(fileDescriptor),
+    );
+  }
+
+  Future<void> _loadMultimodalProjectorFromFdLocked(int fileDescriptor) async {
+    LlamaLogger.instance.info(
+      'Loading multimodal projector from fd: $fileDescriptor',
+    );
+    final fdBackend = backend;
+    if (fdBackend is! BackendFdModelLoading) {
+      throw LlamaUnsupportedException(
+        'Loading a multimodal projector from a file descriptor is not '
+        'supported by the active backend.',
+      );
+    }
+    _ensureReady(requireContext: false);
+    try {
+      if (_mmContextHandle != null) {
+        await _unloadMultimodalProjectorLocked();
+      }
+
+      _mmContextHandle = await (fdBackend as BackendFdModelLoading)
+          .multimodalContextCreateFromFd(_modelHandle!, fileDescriptor);
+      LlamaLogger.instance.info(
+        'Multimodal projector loaded successfully from fd: $fileDescriptor',
+      );
+    } catch (error, stackTrace) {
+      LlamaLogger.instance.error(
+        'Failed to load multimodal projector from fd: $fileDescriptor',
+        error,
+        stackTrace,
+      );
+      rethrow;
+    }
+  }
+
   /// Unloads the active multimodal projector while keeping the model loaded.
   Future<void> unloadMultimodalProjector() {
     return _withMmLifecycle(_unloadMultimodalProjectorLocked);

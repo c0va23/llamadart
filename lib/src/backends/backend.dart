@@ -141,6 +141,15 @@ abstract class BackendFdModelLoading {
   ///
   /// The caller retains ownership of [fileDescriptor].
   Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params);
+
+  /// Loads a multimodal projector (mmproj) from an already-open, readable
+  /// [fileDescriptor].
+  ///
+  /// The caller retains ownership of [fileDescriptor].
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  );
 }
 
 /// Optional backend capability for reporting grammar-constrained decoding.

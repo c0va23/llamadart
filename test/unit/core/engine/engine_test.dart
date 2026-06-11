@@ -222,6 +222,9 @@ class FdLoadingMockBackend extends MockLlamaBackend
   int modelLoadFromFdCalls = 0;
   int? lastFileDescriptor;
   ModelParams? lastFdModelParams;
+  int multimodalContextCreateFromFdCalls = 0;
+  int? lastProjectorModelHandle;
+  int? lastProjectorFileDescriptor;
 
   @override
   Future<int> modelLoadFromFd(int fileDescriptor, ModelParams params) async {
@@ -233,6 +236,17 @@ class FdLoadingMockBackend extends MockLlamaBackend
     }
     _isReady = true;
     return 1;
+  }
+
+  @override
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) async {
+    multimodalContextCreateFromFdCalls += 1;
+    lastProjectorModelHandle = modelHandle;
+    lastProjectorFileDescriptor = fileDescriptor;
+    return 2;
   }
 }
 
@@ -924,6 +938,56 @@ void main() {
         expect(await engine.supportsVision, isFalse);
         expect(await engine.supportsAudio, isFalse);
         expect(engine.isReady, isTrue);
+      },
+    );
+
+    test(
+      'loadMultimodalProjectorFromFd loads through the fd-loading capability',
+      () async {
+        final fdBackend = FdLoadingMockBackend();
+        final fdEngine = LlamaEngine(fdBackend);
+        await fdEngine.loadModelFromFd(42);
+
+        await fdEngine.loadMultimodalProjectorFromFd(43);
+
+        expect(fdBackend.multimodalContextCreateFromFdCalls, 1);
+        expect(fdBackend.lastProjectorModelHandle, 1);
+        expect(fdBackend.lastProjectorFileDescriptor, 43);
+        expect(await fdEngine.supportsVision, isTrue);
+      },
+    );
+
+    test('loadMultimodalProjectorFromFd throws LlamaUnsupportedException when '
+        'the backend lacks the capability', () async {
+      await engine.loadModel('qwen-test.gguf');
+
+      await expectLater(
+        () => engine.loadMultimodalProjectorFromFd(43),
+        throwsA(isA<LlamaUnsupportedException>()),
+      );
+    });
+
+    test('loadMultimodalProjectorFromFd requires a loaded model', () async {
+      final fdEngine = LlamaEngine(FdLoadingMockBackend());
+
+      await expectLater(
+        () => fdEngine.loadMultimodalProjectorFromFd(43),
+        throwsA(isA<LlamaContextException>()),
+      );
+    });
+
+    test(
+      'loadMultimodalProjectorFromFd replaces a path-loaded projector',
+      () async {
+        final fdBackend = FdLoadingMockBackend();
+        final fdEngine = LlamaEngine(fdBackend);
+        await fdEngine.loadModelFromFd(42);
+        await fdEngine.loadMultimodalProjector('proj.gguf');
+
+        await fdEngine.loadMultimodalProjectorFromFd(43);
+
+        expect(fdBackend.multimodalContextCreateFromFdCalls, 1);
+        expect(await fdEngine.supportsVision, isTrue);
       },
     );
 

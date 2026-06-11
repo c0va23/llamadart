@@ -106,6 +106,18 @@ typedef _MtmdInitFromFileDart =
       Pointer<llama_model>,
       mtmd_context_params,
     );
+typedef _MtmdInitFromFilePtrNative =
+    Pointer<mtmd_context> Function(
+      Pointer<FILE>,
+      Pointer<llama_model>,
+      mtmd_context_params,
+    );
+typedef _MtmdInitFromFilePtrDart =
+    Pointer<mtmd_context> Function(
+      Pointer<FILE>,
+      Pointer<llama_model>,
+      mtmd_context_params,
+    );
 typedef _MtmdFreeNative = Void Function(Pointer<mtmd_context>);
 typedef _MtmdFreeDart = void Function(Pointer<mtmd_context>);
 typedef _MtmdInputChunksInitNative = Pointer<mtmd_input_chunks> Function();
@@ -5399,6 +5411,27 @@ class LlamaCppService {
     return handle;
   }
 
+  /// Loads a multimodal projector from an already-open, readable
+  /// [fileDescriptor] — the Android-scoped-storage counterpart of
+  /// [createMultimodalContext].
+  ///
+  /// The mmproj GGUF lives in shared storage that `dart:io` cannot open by path,
+  /// so the caller hands us a read fd from the Storage Access Framework. We
+  /// [dup] it (so our own `fclose` never disturbs the caller's fd), wrap it in a
+  /// `FILE*`, and pass it to `mtmd_init_from_file_ptr`. The caller retains
+  /// ownership of [fileDescriptor].
+  int createMultimodalContextFromFd(int modelHandle, int fileDescriptor) {
+    return _createMultimodalContextWith(
+      modelHandle,
+      // The projector is fully read by init, so nothing needs the fd after the
+      // FILE* closes.
+      invokeNativeInit: (modelPointer, ctxParams) => _withFilePointerFromFd(
+        fileDescriptor,
+        (filePtr) => _mtmdInitFromFilePtr(filePtr, modelPointer, ctxParams),
+      ),
+    );
+  }
+
   /// Frees the multimodal context (projector).
   void freeMultimodalContext(int mmContextHandle) {
     final mmCtx = _mtmdContexts.remove(mmContextHandle);
@@ -5452,6 +5485,34 @@ class LlamaCppService {
       throw Exception(_mtmdUnavailableMessage('mtmd_init_from_file'));
     }
     return fallback.initFromFile(mmProjPath, model, ctxParams);
+  }
+
+  Pointer<mtmd_context> _mtmdInitFromFilePtr(
+    Pointer<FILE> file,
+    Pointer<llama_model> model,
+    mtmd_context_params ctxParams,
+  ) {
+    if (!_mtmdPrimarySymbolsUnavailable) {
+      try {
+        return mtmd_init_from_file_ptr(file, model, ctxParams);
+      } on ArgumentError {
+        // Unlike the other mtmd entry points, this symbol is optional — only
+        // patched libmtmd builds export it — so its absence says nothing about
+        // the rest of the primary symbols. Don't set
+        // _mtmdPrimarySymbolsUnavailable here, or one failed fd attempt on a
+        // stock binary would reroute every later path-based mtmd call to the
+        // dlopen fallback (and break vision outright when that fallback can't
+        // be resolved). Just fall through for this call.
+      }
+    }
+    final fallback = _resolveMtmdFallbackApi();
+    final initFromFilePtr = fallback?.initFromFilePtr;
+    if (initFromFilePtr == null) {
+      // The symbol is absent on stock llamadart-native binaries; loading a
+      // projector from an fd needs the patched libmtmd (mtmd_init_from_file_ptr).
+      throw Exception(_mtmdUnavailableMessage('mtmd_init_from_file_ptr'));
+    }
+    return initFromFilePtr(file, model, ctxParams);
   }
 
   void _mtmdFree(Pointer<mtmd_context> ctx) {
@@ -6118,6 +6179,9 @@ class _MtmdApi {
   final _MtmdDefaultMarkerDart defaultMarker;
   final _MtmdContextParamsDefaultDart contextParamsDefault;
   final _MtmdInitFromFileDart initFromFile;
+  // Optional: only patched libmtmd builds export mtmd_init_from_file_ptr. Null
+  // on stock binaries, where projector-from-fd loading is unsupported.
+  final _MtmdInitFromFilePtrDart? initFromFilePtr;
   final _MtmdFreeDart free;
   final _MtmdInputChunksInitDart inputChunksInit;
   final _MtmdInputChunksFreeDart inputChunksFree;
@@ -6136,6 +6200,7 @@ class _MtmdApi {
     required this.defaultMarker,
     required this.contextParamsDefault,
     required this.initFromFile,
+    required this.initFromFilePtr,
     required this.free,
     required this.inputChunksInit,
     required this.inputChunksFree,
@@ -6167,6 +6232,16 @@ class _MtmdApi {
             );
       } catch (_) {}
 
+      // Only patched libmtmd builds export this; absent on stock binaries.
+      _MtmdInitFromFilePtrDart? initFromFilePtr;
+      try {
+        initFromFilePtr = library
+            .lookupFunction<
+              _MtmdInitFromFilePtrNative,
+              _MtmdInitFromFilePtrDart
+            >('mtmd_init_from_file_ptr');
+      } catch (_) {}
+
       return _MtmdApi(
         defaultMarker: library
             .lookupFunction<_MtmdDefaultMarkerNative, _MtmdDefaultMarkerDart>(
@@ -6181,6 +6256,7 @@ class _MtmdApi {
             .lookupFunction<_MtmdInitFromFileNative, _MtmdInitFromFileDart>(
               'mtmd_init_from_file',
             ),
+        initFromFilePtr: initFromFilePtr,
         free: library.lookupFunction<_MtmdFreeNative, _MtmdFreeDart>(
           'mtmd_free',
         ),

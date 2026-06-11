@@ -220,6 +220,13 @@ void llamaWorkerEntry(SendPort initialSendPort) {
             );
             message.sendPort.send(HandleResponse(handle));
 
+          case MultimodalContextCreateFromFdRequest():
+            final handle = service.createMultimodalContextFromFd(
+              message.modelHandle,
+              message.fileDescriptor,
+            );
+            message.sendPort.send(HandleResponse(handle));
+
           case MultimodalContextFreeRequest():
             service.freeMultimodalContext(message.mmContextHandle);
             message.sendPort.send(DoneResponse());

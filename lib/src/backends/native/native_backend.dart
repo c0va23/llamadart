@@ -312,6 +312,26 @@ class NativeAutoBackend
   }
 
   @override
+  Future<int?> multimodalContextCreateFromFd(
+    int modelHandle,
+    int fileDescriptor,
+  ) {
+    // The base model is already resident, so the delegate is the llama.cpp
+    // backend; forward the projector fd to it.
+    final delegate = _requireDelegate();
+    if (delegate is BackendFdModelLoading) {
+      return (delegate as BackendFdModelLoading).multimodalContextCreateFromFd(
+        modelHandle,
+        fileDescriptor,
+      );
+    }
+    throw UnsupportedError(
+      'The selected native backend does not support loading a multimodal '
+      'projector from a file descriptor.',
+    );
+  }
+
+  @override
   Future<void> multimodalContextFree(int mmContextHandle) {
     return _requireDelegate().multimodalContextFree(mmContextHandle);
   }

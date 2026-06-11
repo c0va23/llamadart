@@ -6,6 +6,11 @@
   Framework selection exposes only an fd and the file path is hidden from
   `dart:io`; only the native llama.cpp backend implements the capability, and
   other backends fail with `LlamaUnsupportedException`.
+* Added `LlamaEngine.loadMultimodalProjectorFromFd` to `BackendFdModelLoading`
+  so multimodal projectors (`mmproj`) can also load from a file descriptor.
+  Requires a native runtime whose `libmtmd` exports `mtmd_init_from_file_ptr`;
+  stock bundles without the symbol fail the fd load with a clear error while
+  path-based projector loading keeps working.
 * Fixed docs references that still pointed at
   `llamadart_litert_lm_flutter` `0.0.1` and
   the pre-`native.1` LiteRT-LM release after the 0.8.0 native pin sync moved
