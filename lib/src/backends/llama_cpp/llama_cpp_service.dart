@@ -5350,21 +5350,44 @@ class LlamaCppService {
 
   /// Creates a multimodal context (projector) for the model.
   int createMultimodalContext(int modelHandle, String mmProjPath) {
+    return _createMultimodalContextWith(
+      modelHandle,
+      invokeNativeInit: (modelPointer, ctxParams) {
+        final mmProjPathPtr = mmProjPath.toNativeUtf8();
+        try {
+          return _mtmdInitFromFile(
+            mmProjPathPtr.cast(),
+            modelPointer,
+            ctxParams,
+          );
+        } finally {
+          malloc.free(mmProjPathPtr);
+        }
+      },
+    );
+  }
+
+  /// Shared body of [createMultimodalContext] and future non-path projector
+  /// sources: validates the model handle, builds the projector params, runs
+  /// [invokeNativeInit] to produce the native context, then records the handle
+  /// bookkeeping.
+  int _createMultimodalContextWith(
+    int modelHandle, {
+    required Pointer<mtmd_context> Function(
+      Pointer<llama_model> modelPointer,
+      mtmd_context_params ctxParams,
+    )
+    invokeNativeInit,
+  }) {
     final model = _models[modelHandle];
     if (model == null) {
       throw Exception("Invalid model handle");
     }
     _applyConfiguredLogLevel();
 
-    final mmProjPathPtr = mmProjPath.toNativeUtf8();
-    Pointer<mtmd_context> mmCtx = nullptr;
-    try {
-      final ctxParams = _mtmdContextParamsDefault();
-      ctxParams.use_gpu = _modelToMtmdUseGpu[modelHandle] ?? true;
-      mmCtx = _mtmdInitFromFile(mmProjPathPtr.cast(), model.pointer, ctxParams);
-    } finally {
-      malloc.free(mmProjPathPtr);
-    }
+    final ctxParams = _mtmdContextParamsDefault();
+    ctxParams.use_gpu = _modelToMtmdUseGpu[modelHandle] ?? true;
+    final mmCtx = invokeNativeInit(model.pointer, ctxParams);
 
     if (mmCtx == nullptr) {
       throw Exception("Failed to load multimodal projector");
