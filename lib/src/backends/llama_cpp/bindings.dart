@@ -10141,6 +10141,12 @@ final class mtmd_context_params extends ffi.Struct {
   external ggml_backend_sched_eval_callback cb_eval;
 
   external ffi.Pointer<ffi.Void> cb_eval_user_data;
+
+  // Added in llama.cpp #24384 (b9617). Must be present so the by-value struct
+  // layout matches the b9623 libmtmd; otherwise mtmd_init_from_file reads past
+  // the (shorter) struct and crashes at projector load.
+  @ffi.Int32()
+  external int batch_max_tokens;
 }
 
 typedef mtmd_bitmap_lazy_callbackFunction =

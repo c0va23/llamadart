@@ -124,21 +124,34 @@ typedef _MtmdInputChunksInitNative = Pointer<mtmd_input_chunks> Function();
 typedef _MtmdInputChunksInitDart = Pointer<mtmd_input_chunks> Function();
 typedef _MtmdInputChunksFreeNative = Void Function(Pointer<mtmd_input_chunks>);
 typedef _MtmdInputChunksFreeDart = void Function(Pointer<mtmd_input_chunks>);
+// NOTE: these mirror the CURRENT libmtmd ABI (b9587+): both take a trailing
+// `bool placeholder` and return a `mtmd_helper_bitmap_wrapper {bitmap, video}`
+// struct BY VALUE. The previous 3-arg/`mtmd_bitmap*`-returning typedefs left
+// the `placeholder` argument as a garbage register value (usually nonzero), so
+// the fallback path built a PLACEHOLDER bitmap -> the image chunk tokenized as
+// a placeholder and mtmd_encode_chunk returned 1 ("image tokens batch is
+// placeholder").
 typedef _MtmdHelperBitmapInitFromFileNative =
-    Pointer<mtmd_bitmap> Function(Pointer<mtmd_context>, Pointer<Char>);
+    mtmd_helper_bitmap_wrapper Function(
+      Pointer<mtmd_context>,
+      Pointer<Char>,
+      Bool,
+    );
 typedef _MtmdHelperBitmapInitFromFileDart =
-    Pointer<mtmd_bitmap> Function(Pointer<mtmd_context>, Pointer<Char>);
+    mtmd_helper_bitmap_wrapper Function(Pointer<mtmd_context>, Pointer<Char>, bool);
 typedef _MtmdHelperBitmapInitFromBufNative =
-    Pointer<mtmd_bitmap> Function(
+    mtmd_helper_bitmap_wrapper Function(
       Pointer<mtmd_context>,
       Pointer<UnsignedChar>,
       Size,
+      Bool,
     );
 typedef _MtmdHelperBitmapInitFromBufDart =
-    Pointer<mtmd_bitmap> Function(
+    mtmd_helper_bitmap_wrapper Function(
       Pointer<mtmd_context>,
       Pointer<UnsignedChar>,
       int,
+      bool,
     );
 typedef _MtmdBitmapInitFromAudioNative =
     Pointer<mtmd_bitmap> Function(Size, Pointer<Float>);
@@ -190,6 +203,26 @@ typedef _MtmdHelperEvalChunksDart =
     );
 typedef _MtmdLogSetNative = Void Function(ggml_log_callback, Pointer<Void>);
 typedef _MtmdLogSetDart = void Function(ggml_log_callback, Pointer<Void>);
+
+/// Diagnostic capture buffer for native mtmd/clip log lines, so a failing
+/// encode can report the exact native LOG_ERR (e.g. "failed to encode image"
+/// vs "image tokens batch is placeholder") in the thrown exception.
+final List<String> _capturedNativeLog = <String>[];
+void _nativeLogCaptureCallback(
+  int level,
+  Pointer<Char> text,
+  Pointer<Void> userData,
+) {
+  try {
+    if (text == nullptr) return;
+    final message = text.cast<Utf8>().toDartString().trim();
+    if (message.isEmpty) return;
+    _capturedNativeLog.add(message);
+    if (_capturedNativeLog.length > 40) {
+      _capturedNativeLog.removeAt(0);
+    }
+  } catch (_) {}
+}
 typedef _LlamaDartMtpInitNative =
     Pointer<llama_dart_mtp> Function(
       Pointer<llama_model>,
@@ -465,6 +498,7 @@ class LlamaCppService {
   String _activeBackendName = 'CPU';
   int _activeResolvedGpuLayers = 0;
   bool _mtmdFallbackLookupAttempted = false;
+  String? _mtmdFallbackLookupSearchKey;
   bool _mtmdPrimarySymbolsUnavailable = false;
   _MtmdApi? _mtmdFallbackApi;
   bool _mtpApiLookupAttempted = false;
@@ -3950,6 +3984,10 @@ class LlamaCppService {
 
       if (res == 0) {
         final newPast = malloc<llama_pos>();
+        // Capture native mtmd/clip logs across the eval so a failure reports the
+        // real reason (e.g. "failed to encode image" / "image tokens batch is
+        // placeholder") instead of a bare return code.
+        _beginNativeLogCapture();
         try {
           final evalResult = _mtmdHelperEvalChunks(
             mmCtx,
@@ -3964,12 +4002,16 @@ class LlamaCppService {
           if (evalResult == 0) {
             initialTokens = newPast.value;
           } else {
+            // Note: code 1 here is usually a CLIP image-encode failure, not a
+            // context-size problem — the native log says which.
             throw Exception(
-              'Multimodal prompt evaluation failed: $evalResult. '
-              'The active context window may be too small for this image and conversation history.',
+              'Multimodal prompt evaluation failed (code $evalResult; '
+              'media_parts=${mediaParts.length}, n_ctx=${modelParams.n_ctx}). '
+              'Native log: ${_endNativeLogCapture()}',
             );
           }
         } finally {
+          _endNativeLogCapture();
           malloc.free(newPast);
         }
       } else {
@@ -5398,6 +5440,12 @@ class LlamaCppService {
     _applyConfiguredLogLevel();
 
     final ctxParams = _mtmdContextParamsDefault();
+    // Run the CLIP/mtmd projector encode on the GPU when the model was loaded
+    // with GPU offload. The earlier "mtmd_encode_chunk returns 1 on Vulkan"
+    // suspicion was a red herring — that failure was a stale binding building a
+    // placeholder bitmap, not the backend — so CPU-only encode is no longer
+    // warranted and costs real latency (slow on Android). Honor the per-model
+    // preference, defaulting to GPU.
     ctxParams.use_gpu = _modelToMtmdUseGpu[modelHandle] ?? true;
     final mmCtx = invokeNativeInit(model.pointer, ctxParams);
 
@@ -5579,7 +5627,7 @@ class LlamaCppService {
         _mtmdUnavailableMessage('mtmd_helper_bitmap_init_from_file'),
       );
     }
-    return fallback.helperBitmapInitFromFile(ctx, pathPtr);
+    return fallback.helperBitmapInitFromFile(ctx, pathPtr, false).bitmap;
   }
 
   Pointer<mtmd_bitmap> _mtmdHelperBitmapInitFromBuf(
@@ -5600,7 +5648,7 @@ class LlamaCppService {
         _mtmdUnavailableMessage('mtmd_helper_bitmap_init_from_buf'),
       );
     }
-    return fallback.helperBitmapInitFromBuf(ctx, data, size);
+    return fallback.helperBitmapInitFromBuf(ctx, data, size, false).bitmap;
   }
 
   Pointer<mtmd_bitmap> _mtmdBitmapInitFromAudio(int n, Pointer<Float> samples) {
@@ -5697,36 +5745,91 @@ class LlamaCppService {
     );
   }
 
+  /// Redirects native mtmd/clip logs into [_capturedNativeLog] for the duration
+  /// of an mtmd call, so a failure can report the exact native reason. Pair with
+  /// [_endNativeLogCapture]. No-op if the mtmd log-set symbol can't be resolved.
+  void _beginNativeLogCapture() {
+    _capturedNativeLog.clear();
+    final api = _resolveMtmdFallbackApi();
+    try {
+      final callback = Pointer.fromFunction<ggml_log_callbackFunction>(
+        _nativeLogCaptureCallback,
+      );
+      api?.logSet?.call(callback, nullptr);
+      api?.helperLogSet?.call(callback, nullptr);
+    } catch (_) {}
+  }
+
+  /// Restores the normal native-log wiring and returns the captured lines.
+  String _endNativeLogCapture() {
+    final captured = _capturedNativeLog.isEmpty
+        ? 'none'
+        : _capturedNativeLog.join(' || ');
+    try {
+      _syncMtmdLogCallbackToLlamaLogger();
+    } catch (_) {}
+    return captured;
+  }
+
   _MtmdApi? _resolveMtmdFallbackApi() {
-    if (_mtmdFallbackLookupAttempted) {
-      return _mtmdFallbackApi;
+    final cached = _mtmdFallbackApi;
+    if (cached != null) {
+      return cached;
     }
+
+    // Search the same directory set the other native fallbacks use
+    // (log-level, MTP), not just _backendModuleDirectory: the mtmd library
+    // sits beside the primary llamadart/llama libraries, so any directory that
+    // can resolve those can resolve libmtmd too.
+    final directories = _llamadartFallbackLookupDirectories();
+    final searchKey = directories.map(path.normalize).join('|');
+
+    // A null result is only memoized against the directory set that produced
+    // it. _resolveMtmdFallbackApi can be reached during backend init -- before
+    // the primary library is mapped and _backendModuleDirectory is known -- so
+    // the first attempt may search an incomplete directory set and find
+    // nothing. Re-attempting once the directory set changes (its key differs)
+    // lets a later call succeed; permanently caching the null would otherwise
+    // disable multimodal for the whole session.
+    if (_mtmdFallbackLookupAttempted &&
+        _mtmdFallbackLookupSearchKey == searchKey) {
+      return null;
+    }
+
     _mtmdFallbackLookupAttempted = true;
+    _mtmdFallbackLookupSearchKey = searchKey;
 
     final fileNameCandidates = _mtmdLibraryCandidateFileNames();
-    final candidates = <String>{...fileNameCandidates};
-    final backendModuleDirectory = _backendModuleDirectory;
-    if (backendModuleDirectory != null) {
+    final pattern = _mtmdLibraryPattern();
+    final candidates = <String>[];
+    for (final directoryPath in directories) {
       for (final fileName in fileNameCandidates) {
-        candidates.add(path.join(backendModuleDirectory, fileName));
+        candidates.add(path.join(directoryPath, fileName));
+      }
+      for (final fileName in _matchingLibraryNames(directoryPath, pattern)) {
+        candidates.add(path.join(directoryPath, fileName));
       }
     }
+    // Keep bare-name fallback last so module-dir resolution wins when present.
+    candidates.addAll(fileNameCandidates);
 
-    DynamicLibrary? library;
+    final seen = <String>{};
     for (final candidate in candidates) {
+      if (!seen.add(candidate)) {
+        continue;
+      }
       try {
-        library = DynamicLibrary.open(candidate);
-        break;
+        final library = DynamicLibrary.open(candidate);
+        final api = _MtmdApi.tryLoad(library);
+        if (api != null) {
+          _mtmdFallbackApi = api;
+          return api;
+        }
       } catch (_) {
         continue;
       }
     }
-    if (library == null) {
-      return null;
-    }
-
-    _mtmdFallbackApi = _MtmdApi.tryLoad(library);
-    return _mtmdFallbackApi;
+    return null;
   }
 
   List<String> _mtmdLibraryCandidateFileNames() {
@@ -5766,8 +5869,12 @@ class LlamaCppService {
   }
 
   String _mtmdUnavailableMessage(String symbol) {
+    final directories = _llamadartFallbackLookupDirectories();
+    final searched = directories.isEmpty
+        ? ''
+        : ' [mtmd library searched in: ${directories.join(' ; ')}]';
     return 'Multimodal support is unavailable in this native runtime bundle '
-        '(missing `$symbol` in both primary and mtmd libraries).';
+        '(missing `$symbol` in both primary and mtmd libraries).$searched';
   }
 
   // --- Helper Getters ---
