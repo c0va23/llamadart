@@ -72,8 +72,19 @@ class SpeculativeDecodingConfig {
   /// separate drafter model, such as llama.cpp `--model-draft` with
   /// `draft-mtp`.
   ///
-  /// Leave null for models that carry their own MTP layers.
+  /// Leave null for models that carry their own MTP layers, or use
+  /// [draftModelFd] when the draft GGUF can only be reached through an
+  /// already-open file descriptor (Android scoped storage).
   final String? draftModelPath;
+
+  /// Optional draft model file descriptor — the fd counterpart of
+  /// [draftModelPath], for when the draft GGUF lives in Android scoped storage
+  /// and cannot be opened by path. The backend loads it through
+  /// `llama_model_load_from_file_ptr` (it mmaps a dup of the fd), exactly as
+  /// [LlamaEngine.loadModelFromFd] does for the base model. The caller retains
+  /// ownership of the fd and must keep it open until the first generation has
+  /// loaded the draft model. Mutually exclusive with [draftModelPath].
+  final int? draftModelFd;
 
   /// Creates a backend-neutral speculative decoding configuration.
   const SpeculativeDecodingConfig({
@@ -82,11 +93,16 @@ class SpeculativeDecodingConfig {
     this.draftTokenMin,
     this.minProbability,
     this.draftModelPath,
+    this.draftModelFd,
   }) : assert(draftTokenMax == null || draftTokenMax >= 0),
        assert(draftTokenMin == null || draftTokenMin >= 0),
        assert(
          minProbability == null ||
              (minProbability >= 0.0 && minProbability <= 1.0),
+       ),
+       assert(
+         draftModelPath == null || draftModelFd == null,
+         'draftModelPath and draftModelFd are mutually exclusive',
        );
 
   /// Enables the backend's default speculative decoding behavior.
@@ -95,7 +111,8 @@ class SpeculativeDecodingConfig {
       draftTokenMax = null,
       draftTokenMin = null,
       minProbability = null,
-      draftModelPath = null;
+      draftModelPath = null,
+      draftModelFd = null;
 
   /// Enables multi-token prediction speculative decoding.
   const SpeculativeDecodingConfig.mtp({
@@ -103,12 +120,17 @@ class SpeculativeDecodingConfig {
     this.draftTokenMin,
     this.minProbability,
     this.draftModelPath,
+    this.draftModelFd,
   }) : strategy = SpeculativeDecodingStrategy.mtp,
        assert(draftTokenMax == null || draftTokenMax >= 0),
        assert(draftTokenMin == null || draftTokenMin >= 0),
        assert(
          minProbability == null ||
              (minProbability >= 0.0 && minProbability <= 1.0),
+       ),
+       assert(
+         draftModelPath == null || draftModelFd == null,
+         'draftModelPath and draftModelFd are mutually exclusive',
        );
 }
 
