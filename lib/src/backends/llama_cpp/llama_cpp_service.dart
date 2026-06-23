@@ -421,12 +421,17 @@ class _LlamaCppMtpConfig {
     required this.draftTokenMin,
     required this.minProbability,
     required this.draftModelPath,
+    required this.draftModelFd,
   });
 
   final int draftTokenMax;
   final int draftTokenMin;
   final double minProbability;
   final String? draftModelPath;
+
+  /// Draft GGUF file descriptor (Android scoped storage), the fd counterpart of
+  /// [draftModelPath]. Mutually exclusive with it.
+  final int? draftModelFd;
 }
 
 /// Service responsible for managing Llama.cpp models and contexts.
@@ -1698,6 +1703,63 @@ class LlamaCppService {
       draftModelPath,
       'MTP draft model',
     );
+    return _loadMtpDraftModelWith(
+      targetModelHandle: targetModelHandle,
+      cacheKeyForGpuLayers: (resolvedGpuLayers) => _mtpDraftModelCacheKey(
+        targetModelHandle,
+        draftModelPath,
+        resolvedGpuLayers,
+      ),
+      sourcePath: draftModelPath,
+      sourceDescription: "size=$modelFileSize bytes, path=$draftModelPath",
+      invokeNativeLoad: (mparams) {
+        final modelPathPtr = draftModelPath.toNativeUtf8();
+        try {
+          return llama_model_load_from_file(modelPathPtr.cast(), mparams);
+        } finally {
+          malloc.free(modelPathPtr);
+        }
+      },
+    );
+  }
+
+  /// Loads the MTP draft model from an already-open file descriptor — the fd
+  /// counterpart of [_loadMtpDraftModel], for an Android scoped-storage GGUF the
+  /// engine can't open by path. Like [loadModelFromFd] it wraps a dup of the fd
+  /// in a `FILE*` and hands it to `llama_model_load_from_file_ptr`, which mmaps
+  /// it directly. The caller retains ownership of [fileDescriptor]; it must stay
+  /// open across this first load, after which the cached model owns its mapping.
+  _LlamaModelWrapper _loadMtpDraftModelFromFd(
+    int targetModelHandle,
+    int fileDescriptor,
+  ) {
+    return _loadMtpDraftModelWith(
+      targetModelHandle: targetModelHandle,
+      cacheKeyForGpuLayers: (resolvedGpuLayers) =>
+          '$targetModelHandle\x00fd:$fileDescriptor\x00$resolvedGpuLayers',
+      sourcePath: null,
+      sourceDescription: "fd=$fileDescriptor",
+      invokeNativeLoad: (mparams) => _withFilePointerFromFd(
+        fileDescriptor,
+        (filePtr) => llama_model_load_from_file_ptr(filePtr, mparams),
+      ),
+    );
+  }
+
+  /// Shared body of [_loadMtpDraftModel] and [_loadMtpDraftModelFromFd]:
+  /// resolves the draft backend/GPU layers from the target model, consults the
+  /// draft-model cache, builds the load params, and runs [invokeNativeLoad] to
+  /// produce the native pointer. [cacheKeyForGpuLayers] mints the cache key once
+  /// the resolved GPU-layer count is known (it is part of the key); [sourcePath]
+  /// is null for an fd load and [sourceDescription] only appears in diagnostics.
+  _LlamaModelWrapper _loadMtpDraftModelWith({
+    required int targetModelHandle,
+    required String Function(int resolvedGpuLayers) cacheKeyForGpuLayers,
+    required String? sourcePath,
+    required String sourceDescription,
+    required Pointer<llama_model> Function(llama_model_params mparams)
+    invokeNativeLoad,
+  }) {
     final targetModelParams =
         _modelLoadParams[targetModelHandle] ?? const ModelParams();
     final targetBackendName = _modelBackendNames[targetModelHandle];
@@ -1707,19 +1769,14 @@ class LlamaCppService {
             targetModelParams,
             isAndroid: Platform.isAndroid,
           );
-    final targetResolvedGpuLayers =
+    final draftGpuLayers =
         _modelResolvedGpuLayers[targetModelHandle] ??
         resolveGpuLayersForLoad(
           targetModelParams,
           isAndroid: Platform.isAndroid,
         );
     final draftBackend = effectiveBackend;
-    final draftGpuLayers = targetResolvedGpuLayers;
-    final cacheKey = _mtpDraftModelCacheKey(
-      targetModelHandle,
-      draftModelPath,
-      draftGpuLayers,
-    );
+    final cacheKey = cacheKeyForGpuLayers(draftGpuLayers);
 
     final cached = _mtpDraftModels[cacheKey];
     if (cached != null) {
@@ -1728,7 +1785,6 @@ class LlamaCppService {
 
     _prepareBackendsForModelLoad(draftBackend);
 
-    final modelPathPtr = draftModelPath.toNativeUtf8();
     final mparams = llama_model_default_params();
     final preferredDevices = _createPreferredDeviceList(draftBackend);
     mparams.n_gpu_layers = draftGpuLayers;
@@ -1741,9 +1797,8 @@ class LlamaCppService {
 
     Pointer<llama_model> modelPtr = nullptr;
     try {
-      modelPtr = llama_model_load_from_file(modelPathPtr.cast(), mparams);
+      modelPtr = invokeNativeLoad(mparams);
     } finally {
-      malloc.free(modelPathPtr);
       if (preferredDevices != null) {
         malloc.free(preferredDevices);
       }
@@ -1752,12 +1807,12 @@ class LlamaCppService {
     if (modelPtr == nullptr) {
       final diagnostics = _backendDiagnostics();
       throw Exception(
-        "Failed to load MTP draft model (size=$modelFileSize bytes, "
-        "path=$draftModelPath, diagnostics=$diagnostics)",
+        "Failed to load MTP draft model ($sourceDescription, "
+        "diagnostics=$diagnostics)",
       );
     }
 
-    final wrapper = _LlamaModelWrapper(modelPtr, sourcePath: draftModelPath);
+    final wrapper = _LlamaModelWrapper(modelPtr, sourcePath: sourcePath);
     _mtpDraftModels[cacheKey] = wrapper;
     _modelToMtpDraftModelKeys
         .putIfAbsent(targetModelHandle, () => <String>{})
@@ -3227,6 +3282,21 @@ class LlamaCppService {
     final draftTokenMin = speculativeConfig.draftTokenMin ?? 0;
     final minProbability = speculativeConfig.minProbability ?? 0.0;
     final draftModelPath = speculativeConfig.draftModelPath;
+    final draftModelFd = speculativeConfig.draftModelFd;
+
+    if (draftModelPath != null && draftModelFd != null) {
+      throw ArgumentError(
+        'draftModelPath and draftModelFd are mutually exclusive for '
+        'llama.cpp MTP',
+      );
+    }
+    if (draftModelFd != null && draftModelFd < 0) {
+      throw ArgumentError.value(
+        draftModelFd,
+        'draftModelFd',
+        'must be a non-negative file descriptor for llama.cpp MTP',
+      );
+    }
 
     if (draftTokenMax <= 0) {
       throw RangeError.value(
@@ -3262,6 +3332,7 @@ class LlamaCppService {
       draftTokenMin: draftTokenMin,
       minProbability: minProbability,
       draftModelPath: draftModelPath,
+      draftModelFd: draftModelFd,
     );
   }
 
@@ -3328,7 +3399,13 @@ class LlamaCppService {
       if (mtpConfig != null) {
         mtpApi = _resolveMtpApi();
         final draftModelPath = mtpConfig.draftModelPath;
-        final draftModel = draftModelPath == null
+        final draftModelFd = mtpConfig.draftModelFd;
+        // A separate draft model can arrive as a path (desktop) or an fd
+        // (Android scoped storage); a null both means self-MTP (the target
+        // model carries its own MTP layers).
+        final draftModel = draftModelFd != null
+            ? _loadMtpDraftModelFromFd(modelHandle, draftModelFd)
+            : draftModelPath == null
             ? null
             : _loadMtpDraftModel(modelHandle, draftModelPath);
         mtpSession = mtpApi.initSession(
@@ -3342,7 +3419,7 @@ class LlamaCppService {
           backendSampling: true,
         );
         if (mtpSession == nullptr) {
-          final draftHint = draftModelPath == null
+          final draftHint = draftModelPath == null && draftModelFd == null
               ? 'Use an MTP GGUF model'
               : 'Verify the draft model is compatible with the target model';
           throw UnsupportedError(
