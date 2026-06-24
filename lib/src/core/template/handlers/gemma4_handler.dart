@@ -105,6 +105,9 @@ class Gemma4Handler extends ChatTemplateHandler {
         'messages': _serializeMessages(
           messages,
           multimodalContent: multimodalContent,
+          gemmaNativeToolResponses: _usesGemmaNativeToolResponses(
+            templateSource,
+          ),
         ),
         'add_generation_prompt': addAssistant,
         'tools': tools?.map((t) => t.toJson()).toList(),
@@ -141,11 +144,12 @@ class Gemma4Handler extends ChatTemplateHandler {
   List<Map<String, dynamic>> _serializeMessages(
     List<LlamaChatMessage> messages, {
     required bool multimodalContent,
+    required bool gemmaNativeToolResponses,
   }) {
     return messages
         .map((message) {
-          if (message.role == LlamaChatRole.tool) {
-            return _serializeToolMessage(message);
+          if (message.role == LlamaChatRole.tool && gemmaNativeToolResponses) {
+            return _serializeNativeToolMessage(message);
           }
 
           return multimodalContent
@@ -155,7 +159,26 @@ class Gemma4Handler extends ChatTemplateHandler {
         .toList(growable: false);
   }
 
-  Map<String, dynamic> _serializeToolMessage(LlamaChatMessage message) {
+  /// Whether [templateSource] renders tool results from a Gemma-native
+  /// `tool_responses` array on the tool message, rather than the OpenAI Chat
+  /// Completions shape ([LlamaChatMessage.toJson]'s `content` + `tool_call_id`).
+  ///
+  /// The two are mutually exclusive: the OpenAI-compatible Gemma templates skip
+  /// standalone `role:tool` messages (`message['role'] != 'tool'`) and
+  /// forward-scan them from the issuing assistant turn, reading only `content`
+  /// and resolving the function name through `tool_call_id`. Handing those the
+  /// native `tool_responses` shape (whose `content` is null) drops the result
+  /// and the model hallucinates. They are recognised by their use of
+  /// `tool_call_id`, which the native template never references — the same
+  /// raw-source probing [TemplateCaps] uses.
+  bool _usesGemmaNativeToolResponses(String templateSource) {
+    return !templateSource.contains('tool_call_id');
+  }
+
+  /// Serializes a tool message into the Gemma-native `tool_responses` array the
+  /// older Gemma templates iterate. The OpenAI-compatible templates instead use
+  /// [LlamaChatMessage.toJson]'s flat shape directly (see [_serializeMessages]).
+  Map<String, dynamic> _serializeNativeToolMessage(LlamaChatMessage message) {
     final toolResults = message.parts
         .whereType<LlamaToolResultContent>()
         .toList();

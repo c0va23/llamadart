@@ -180,5 +180,74 @@ void main() {
       expect(result.format, equals(ChatFormat.gemma4.index));
       expect(result.prompt, contains('get_current_time=2026-04-02T13:10:00'));
     });
+
+    test(
+      'feeds the OpenAI tool shape to templates that forward-scan by '
+      'tool_call_id',
+      () {
+        // The newer Gemma 4 chat templates skip standalone role:tool messages
+        // and forward-scan them from the issuing assistant turn, keying off
+        // `content` and resolving the function name through `tool_call_id`.
+        // Regression: the handler used to emit only `tool_responses` with a
+        // null `content`, so this variant rendered an empty result and the
+        // model hallucinated instead of reading the tool output.
+        const template =
+            '<|turn>\n'
+            '{% for message in messages %}'
+            '{% if message["role"] != "tool" %}'
+            '{% if message["tool_calls"] %}'
+            '{% for k in range(loop.index0 + 1, messages | length) %}'
+            '{% if messages[k]["role"] == "tool" %}'
+            '{% set follow = messages[k] %}'
+            '{% set name = follow["name"] %}'
+            '{% for tc in message["tool_calls"] %}'
+            '{% if tc["id"] == follow["tool_call_id"] %}'
+            '{% set name = tc["function"]["name"] %}'
+            '{% endif %}'
+            '{% endfor %}'
+            '{{ name }}={{ follow["content"] }}'
+            '{% endif %}'
+            '{% endfor %}'
+            '{% endif %}'
+            '{% endif %}'
+            '{% endfor %}'
+            '<turn|>';
+
+        final result = ChatTemplateEngine.render(
+          templateSource: template,
+          messages: const [
+            LlamaChatMessage.withContent(
+              role: LlamaChatRole.assistant,
+              content: [
+                LlamaToolCallContent(
+                  id: 'call_0',
+                  name: 'get_current_time',
+                  arguments: {},
+                  rawJson: '{}',
+                ),
+              ],
+            ),
+            LlamaChatMessage.withContent(
+              role: LlamaChatRole.tool,
+              content: [
+                LlamaToolResultContent(
+                  id: 'call_0',
+                  name: 'get_current_time',
+                  result: '2026-04-02T13:10:00',
+                ),
+              ],
+            ),
+          ],
+          metadata: const {},
+          addAssistant: false,
+        );
+
+        expect(result.format, equals(ChatFormat.gemma4.index));
+        expect(
+          result.prompt,
+          contains('get_current_time=2026-04-02T13:10:00'),
+        );
+      },
+    );
   });
 }
