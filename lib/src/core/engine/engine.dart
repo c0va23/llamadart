@@ -718,6 +718,63 @@ class LlamaEngine {
 
         if (streamingMode == _ToolStreamingMode.undecided) {
           undecidedPrefix += token;
+
+          // Stream any leading reasoning as it arrives rather than withholding
+          // every token until the raw-vs-parsed routing decision resolves. That
+          // decision is made on the post-thinking content, and leading
+          // reasoning is routed identically whichever way it lands, so a long
+          // think block would otherwise sit buffered and surface in a single
+          // chunk the instant content begins — leaving the consumer with no
+          // first token (the UI's generation stage stuck on "prompt
+          // processing") for the whole think. Reuse the same splitter the raw
+          // path uses so `streamedReasoning` stays a prefix of the final parse
+          // (the end-of-stream reconciliation depends on that invariant).
+          final split = _splitThinkingBuffer(
+            pendingBuffer: undecidedPrefix,
+            isThinking: isThinking,
+            startTag: startTag,
+            endTag: endTag,
+          );
+          isThinking = split.isThinking;
+          var postThinkingContent = '';
+          for (final emission in split.emissions) {
+            if (emission.isThinking) {
+              streamedReasoning += emission.text;
+              if (enableThinking) {
+                yield LlamaCompletionChunk(
+                  id: 'chatcmpl-$completionId',
+                  object: 'chat.completion.chunk',
+                  created: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+                  model: _modelPath ?? 'llama_model',
+                  choices: [
+                    LlamaCompletionChunkChoice(
+                      index: 0,
+                      delta: LlamaCompletionChunkDelta(thinking: emission.text),
+                    ),
+                  ],
+                );
+              }
+            } else {
+              postThinkingContent += emission.text;
+            }
+          }
+
+          if (isThinking) {
+            // Still inside the reasoning block. The routing decision needs
+            // post-thinking content, so keep only the partial end-tag tail the
+            // splitter held back and wait for more tokens. The reasoning seen
+            // so far has already been emitted.
+            undecidedPrefix = split.pendingBuffer;
+            continue;
+          }
+
+          // Reasoning (if any) has closed: everything left is the post-thinking
+          // content the routing decision is made on. The splitter already
+          // stripped the reasoning, so this is the same text
+          // `_stripLeadingThinkingForToolDecision` would yield — passing it back
+          // through keeps the partial-tag boundary guard (it returns null while
+          // the tail is still only a prefix of a thinking tag).
+          undecidedPrefix = postThinkingContent + split.pendingBuffer;
           final decisionPrefix = _stripLeadingThinkingForToolDecision(
             undecidedPrefix,
             startTag: startTag,

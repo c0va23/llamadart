@@ -2039,6 +2039,70 @@ void main() {
     );
 
     test(
+      'create streams leading reasoning incrementally in tool-enabled mode',
+      () async {
+        // A think block that spans several generation chunks with no content
+        // yet. The routing decision (raw vs parsed) cannot resolve until the
+        // post-thinking content arrives, but the reasoning must still stream as
+        // it is produced — otherwise the whole block lands in one chunk the
+        // instant content begins and the consumer gets no first token (the UI's
+        // generation stage stays stuck on "prompt processing") for the entire
+        // think.
+        backend.generationChunks = const [
+          '<think>step one ',
+          'step two ',
+          'step three',
+          '</think>',
+          'answer here',
+        ];
+        await engine.loadModel('qwen-test.gguf');
+
+        final chunks = await engine
+            .create(
+              const [
+                LlamaChatMessage.fromText(role: LlamaChatRole.user, text: 'hi'),
+              ],
+              tools: [
+                ToolDefinition(
+                  name: 'get_weather',
+                  description: 'Get weather',
+                  parameters: [ToolParam.string('city')],
+                  handler: (_) async => 'ok',
+                ),
+              ],
+              toolChoice: ToolChoice.auto,
+            )
+            .toList();
+
+        final thinkingChunks = chunks
+            .where((chunk) => chunk.choices.first.delta.thinking != null)
+            .toList();
+        final contentChunks = chunks
+            .where((chunk) => chunk.choices.first.delta.content != null)
+            .toList();
+        final streamedThinking = thinkingChunks
+            .map((chunk) => chunk.choices.first.delta.thinking!)
+            .join();
+        final streamedContent = contentChunks
+            .map((chunk) => chunk.choices.first.delta.content!)
+            .join();
+
+        expect(streamedThinking, equals('step one step two step three'));
+        expect(streamedContent, equals('answer here'));
+        // The reasoning is split across multiple chunks rather than buffered
+        // into one — this is the regression guard against the "whole think
+        // arrives at once" bug.
+        expect(thinkingChunks.length, greaterThan(1));
+        // And reasoning is emitted before any content, i.e. while the routing
+        // decision is still pending.
+        final firstThinkingIndex = chunks.indexOf(thinkingChunks.first);
+        final firstContentIndex = chunks.indexOf(contentChunks.first);
+        expect(firstThinkingIndex, lessThan(firstContentIndex));
+        expect(chunks.last.choices.first.finishReason, equals('stop'));
+      },
+    );
+
+    test(
       'create suppresses thinking deltas when thinking is disabled',
       () async {
         backend.generationChunks = const ['<think>reason', '</think> answer'];
