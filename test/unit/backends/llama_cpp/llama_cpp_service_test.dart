@@ -1036,6 +1036,35 @@ void main() {
       );
     });
   });
+
+  group('backendRegistryNames', () {
+    test('maps HIP to "ROCm" first, then "HIP"', () {
+      // ggml's `ggml_backend_load_all` registers the AMD HIP backend under the
+      // name "ROCm", not "HIP". Resolving "HIP" alone found no registry, so the
+      // preferred-device list was empty and llama.cpp split the model across
+      // every GPU device — ROCm0 *and* Vulkan0 on the same iGPU — which hung the
+      // load. "ROCm" must come first; "HIP" stays as a fallback. Lock that in.
+      expect(
+        LlamaCppService.backendRegistryNames(GpuBackend.hip),
+        ['ROCm', 'HIP'],
+      );
+    });
+
+    test('maps each GPU backend to its ggml registry name', () {
+      expect(LlamaCppService.backendRegistryNames(GpuBackend.vulkan), [
+        'Vulkan',
+      ]);
+      expect(LlamaCppService.backendRegistryNames(GpuBackend.cuda), ['CUDA']);
+      expect(LlamaCppService.backendRegistryNames(GpuBackend.metal), ['Metal']);
+    });
+
+    test('auto and cpu resolve by type, not by registry name', () {
+      // These return an empty name list — _resolvePreferredDevices handles them
+      // separately (auto → null, cpu → device-by-type).
+      expect(LlamaCppService.backendRegistryNames(GpuBackend.auto), isEmpty);
+      expect(LlamaCppService.backendRegistryNames(GpuBackend.cpu), isEmpty);
+    });
+  });
 }
 
 void _createWindowsBundleMarkerFiles(

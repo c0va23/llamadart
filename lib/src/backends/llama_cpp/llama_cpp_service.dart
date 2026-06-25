@@ -3059,6 +3059,38 @@ class LlamaCppService {
     return ptr;
   }
 
+  /// The ggml backend-registry name(s) that select [backend]'s devices, most
+  /// preferred first. These must match the names ggml's `ggml_backend_load_all`
+  /// registers, which are *not* always the same token as our [GpuBackend] enum:
+  /// most notably ggml registers the AMD HIP/ROCm backend as **"ROCm"**, not
+  /// "HIP". Resolving the wrong name finds no registry, so the preferred-device
+  /// list comes back empty and llama.cpp falls back to loading across *all* GPU
+  /// devices — on a host that also has the Vulkan backend loaded that splits the
+  /// model across ROCm0 and Vulkan0, two drivers contending for the same
+  /// physical iGPU, which hangs the load. "HIP" is kept as a trailing fallback
+  /// for any build that registers it under the older name. [GpuBackend.auto]
+  /// and [GpuBackend.cpu] are resolved separately (by type, not by reg name) and
+  /// return an empty list here. Exposed as a static seam for unit tests.
+  static List<String> backendRegistryNames(GpuBackend backend) {
+    switch (backend) {
+      case GpuBackend.auto:
+      case GpuBackend.cpu:
+        return const [];
+      case GpuBackend.vulkan:
+        return const ['Vulkan'];
+      case GpuBackend.metal:
+        return const ['Metal'];
+      case GpuBackend.cuda:
+        return const ['CUDA'];
+      case GpuBackend.blas:
+        return const ['BLAS'];
+      case GpuBackend.opencl:
+        return const ['OpenCL'];
+      case GpuBackend.hip:
+        return const ['ROCm', 'HIP'];
+    }
+  }
+
   List<ggml_backend_dev_t>? _resolvePreferredDevices(GpuBackend backend) {
     switch (backend) {
       case GpuBackend.auto:
@@ -3072,17 +3104,18 @@ class LlamaCppService {
         }
         return [cpuDev];
       case GpuBackend.vulkan:
-        return _devicesForBackendRegName('Vulkan');
       case GpuBackend.metal:
-        return _devicesForBackendRegName('Metal');
       case GpuBackend.cuda:
-        return _devicesForBackendRegName('CUDA');
       case GpuBackend.blas:
-        return _devicesForBackendRegName('BLAS');
       case GpuBackend.opencl:
-        return _devicesForBackendRegName('OpenCL');
       case GpuBackend.hip:
-        return _devicesForBackendRegName('HIP');
+        for (final registryName in backendRegistryNames(backend)) {
+          final devices = _devicesForBackendRegName(registryName);
+          if (devices != null) {
+            return devices;
+          }
+        }
+        return null;
     }
   }
 
