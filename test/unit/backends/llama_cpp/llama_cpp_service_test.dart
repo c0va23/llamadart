@@ -1001,6 +1001,41 @@ void main() {
 
     expect(LlamaCppService.resolveBackendModuleDirectory(), isNull);
   });
+
+  group('resolveBackendLabelForInfo', () {
+    test('resolves a HIP request against ggml\'s "ROCm" device label', () {
+      // ggml names the HIP backend "ROCm", so the device label never contains
+      // "hip". Before the marker matched "rocm" too, this resolved to "CPU" and
+      // a real GPU turn was mislabelled. Lock that in.
+      expect(
+        LlamaCppService.resolveBackendLabelForInfo(
+          GpuBackend.hip,
+          'ROCm (AMD Radeon 890M Graphics)',
+        ),
+        'ROCm',
+      );
+    });
+
+    test('a HIP request with no GPU device label falls back to CPU', () {
+      expect(
+        LlamaCppService.resolveBackendLabelForInfo(
+          GpuBackend.hip,
+          'CPU (AMD Ryzen)',
+        ),
+        'CPU',
+      );
+    });
+
+    test('resolves a Vulkan request against its device label', () {
+      expect(
+        LlamaCppService.resolveBackendLabelForInfo(
+          GpuBackend.vulkan,
+          'Vulkan0 (AMD Radeon 890M Graphics)',
+        ),
+        'Vulkan',
+      );
+    });
+  });
 }
 
 void _createWindowsBundleMarkerFiles(

@@ -1163,6 +1163,16 @@ class LlamaCppService {
         '`ggml_backend_score`=$score.';
   }
 
+  /// Resolves the human backend label for [requestedBackend] against the ggml
+  /// device/registry label string [backendInfo] (e.g. `"ROCm (AMD Radeon ...)"`,
+  /// `"Vulkan0"`). Exposed for tests: this is the seam where ggml's own backend
+  /// names have to line up with the [GpuBackend] enum — notably the HIP backend,
+  /// which ggml registers as "ROCm", so a hip request must still resolve here.
+  static String resolveBackendLabelForInfo(
+    GpuBackend requestedBackend,
+    String backendInfo,
+  ) => _resolveExplicitBackendName(requestedBackend, backendInfo);
+
   void _recordStartupDiagnostic(String message) {
     if (message.isEmpty) {
       return;
@@ -1852,7 +1862,10 @@ class LlamaCppService {
     }
   }
 
-  String _resolveExplicitBackendName(GpuBackend backend, String backendInfo) {
+  static String _resolveExplicitBackendName(
+    GpuBackend backend,
+    String backendInfo,
+  ) {
     if (_backendInfoContainsBackendMarker(backendInfo, backend)) {
       return _backendDisplayName(backend.name);
     }
@@ -1905,7 +1918,10 @@ class LlamaCppService {
       case GpuBackend.opencl:
         return lower.contains('opencl');
       case GpuBackend.hip:
-        return lower.contains('hip');
+        // ggml registers the HIP backend under the name "ROCm" (its reg/device
+        // label, e.g. "ROCm (AMD Radeon ...)"), so match that too — otherwise a
+        // real ROCm load fails this marker and resolves to "CPU".
+        return lower.contains('hip') || lower.contains('rocm');
       case GpuBackend.cuda:
         return lower.contains('cuda');
       case GpuBackend.blas:
@@ -5437,7 +5453,10 @@ class LlamaCppService {
       case 'cuda':
         return 'CUDA';
       case 'hip':
-        return 'HIP';
+        // ggml itself names this backend "ROCm"; use the same label end to end
+        // (the app's LocalLlamaBackend.rocm is also "ROCm") so the supported-
+        // backends list and the per-message backend read consistently.
+        return 'ROCm';
       case 'blas':
         return 'BLAS';
       default:
