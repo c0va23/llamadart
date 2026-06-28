@@ -1621,12 +1621,17 @@ class LlamaCppService {
         effectiveBackend != GpuBackend.cpu;
     if (explicitGpuBackend &&
         preferredDevices == null &&
-        _shouldForceCpuFallbackForMissingPreferredDevices(effectiveBackend)) {
+        _shouldForceCpuFallbackForMissingPreferredDevices()) {
       // Honor explicit backend intent: if requested GPU backend is unavailable,
       // fall back to CPU instead of letting another GPU backend auto-select.
       preferredDevices = _createPreferredDeviceList(GpuBackend.cpu);
       gpuLayers = 0;
       forcedCpuFallback = true;
+      LlamaLogger.instance.warn(
+        'Requested ${_backendDisplayName(effectiveBackend.name)} GPU backend is '
+        'unavailable — no matching device is registered (its native backend '
+        'module is likely not bundled in this build). Falling back to CPU.',
+      );
     }
     final mtmdUseGpu = resolveMtmdUseGpuForLoad(
       modelParams,
@@ -1873,6 +1878,8 @@ class LlamaCppService {
   }
 
   String? _resolveAutoBackendName(String backendInfo) {
+    // Order must match _resolveAutoPreferredDevices so the reported label names
+    // the backend auto actually selected.
     const preferredOrder = <GpuBackend>[
       GpuBackend.metal,
       GpuBackend.cuda,
@@ -1891,9 +1898,7 @@ class LlamaCppService {
     return null;
   }
 
-  bool _shouldForceCpuFallbackForMissingPreferredDevices(
-    GpuBackend requestedBackend,
-  ) {
+  bool _shouldForceCpuFallbackForMissingPreferredDevices() {
     final backendModuleDirectory = _backendModuleDirectory;
     if (backendModuleDirectory == null) {
       // Consolidated runtimes (notably Apple) do not expose per-backend
@@ -1902,7 +1907,15 @@ class LlamaCppService {
       return false;
     }
 
-    return !_isBackendModuleBundled(requestedBackend.name);
+    // On DL-module platforms this is reached only when an explicitly requested
+    // GPU backend resolved to zero devices. That means it is unavailable for
+    // EITHER reason — its module isn't bundled, OR the module loaded but
+    // enumerated no device (a flaky/failed GPU init, e.g. an intermittent HSA
+    // error on an iGPU). Both deserve the same honest outcome: honor the explicit
+    // choice by falling back to CPU (not silently auto-selecting another GPU),
+    // and let the caller surface a visible "X unavailable" label + warning rather
+    // than a bare, mysterious "CPU".
+    return true;
   }
 
   static bool _backendInfoContainsBackendMarker(
@@ -3094,7 +3107,7 @@ class LlamaCppService {
   List<ggml_backend_dev_t>? _resolvePreferredDevices(GpuBackend backend) {
     switch (backend) {
       case GpuBackend.auto:
-        return null;
+        return _resolveAutoPreferredDevices();
       case GpuBackend.cpu:
         final cpuDev = _ggmlBackendDevByType(
           ggml_backend_dev_type.GGML_BACKEND_DEVICE_TYPE_CPU,
@@ -3117,6 +3130,54 @@ class LlamaCppService {
         }
         return null;
     }
+  }
+
+  /// Resolves the preferred device list for [GpuBackend.auto].
+  ///
+  /// Auto must not split a single model across two GPU backends that target the
+  /// **same** physical device — e.g. when both the Vulkan (`Vulkan0`) and ROCm
+  /// (`ROCm0`) DL modules are bundled, they enumerate the one iGPU twice. Letting
+  /// llama.cpp use "all devices" then spreads the model across both, two drivers
+  /// contending for the same silicon, which stalls or hangs the load.
+  ///
+  /// So: when more than one GPU backend registry reports devices, pick a single
+  /// preferred backend (most portable/stable first) and return only its devices.
+  /// With zero or one GPU backend present, return `null` so llama.cpp keeps its
+  /// default — which preserves genuine multi-GPU splitting *within* one backend
+  /// (e.g. two CUDA cards).
+  List<ggml_backend_dev_t>? _resolveAutoPreferredDevices() {
+    // Most performant first. On AMD, ROCm/HIP generally outperforms Vulkan, so it
+    // precedes Vulkan here (and matches _resolveAutoBackendName's order).
+    const preferredOrder = <GpuBackend>[
+      GpuBackend.metal,
+      GpuBackend.cuda,
+      GpuBackend.hip,
+      GpuBackend.vulkan,
+      GpuBackend.opencl,
+    ];
+
+    final devicesByBackend = <GpuBackend, List<ggml_backend_dev_t>>{};
+    for (final backend in preferredOrder) {
+      for (final registryName in backendRegistryNames(backend)) {
+        final devices = _devicesForBackendRegName(registryName);
+        if (devices != null && devices.isNotEmpty) {
+          devicesByBackend[backend] = devices;
+          break;
+        }
+      }
+    }
+
+    if (devicesByBackend.length < 2) {
+      return null;
+    }
+
+    for (final backend in preferredOrder) {
+      final devices = devicesByBackend[backend];
+      if (devices != null) {
+        return devices;
+      }
+    }
+    return null;
   }
 
   List<ggml_backend_dev_t>? _devicesForBackendRegName(String regName) {
